@@ -90,4 +90,14 @@ public class MqttService
 
         await _mqttClient.PublishAsync(applicationMessage, CancellationToken.None);
     }
+
+    public async Task SendContainerStats(object id, ContainerStats stats)
+    {
+        var applicationMessage = new MqttApplicationMessageBuilder()
+            .WithTopic($"{_configuration["Mqtt:Topic"]}/state")
+            .WithPayload(JsonConvert.SerializeObject(stats))
+            .Build();
+
+        await _mqttClient.PublishAsync(applicationMessage, CancellationToken.None);
+    }
 }

@@ -7,6 +7,7 @@ namespace Docker.MQTT.Remote.Service;
 public class MainService(ILogger<MainService> logger, DockerService dockerService, MqttService mqttService) : IHostedService, IDisposable
 {
     private Timer? _timer;
+    private Dictionary<string, CancellationTokenSource> _trackingList = new();
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -25,6 +26,11 @@ public class MainService(ILogger<MainService> logger, DockerService dockerServic
             await dockerService.StartContainer(args.Id);
         };
 
+        dockerService.OnStats += async (sender, args) =>
+        {
+            await mqttService.SendContainerStats(args.Id, args.ContainerStats);
+        };
+
     }
 
     private async void SendStatus(object? state)
@@ -37,6 +43,21 @@ public class MainService(ILogger<MainService> logger, DockerService dockerServic
             logger.LogTrace(JsonConvert.SerializeObject(containers, Formatting.None));
             
             await mqttService.SendContainerStatus(containers);
+
+            foreach (var listKey in _trackingList.Keys.Where(listKey => containers.All(x => x.Id != listKey)))
+            {
+                await _trackingList[listKey].CancelAsync();
+                _trackingList.Remove(listKey);
+            }
+            
+            foreach (var container in containers)
+            {
+                if (_trackingList.ContainsKey(container.Id)) continue;
+                
+                var cts = new CancellationTokenSource();
+                dockerService.StartStatusStream(container.Id, cts.Token);
+                _trackingList.Add(container.Id, cts);
+            }
             
         }
         catch (Exception e)
