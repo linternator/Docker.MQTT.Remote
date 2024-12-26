@@ -18,41 +18,42 @@ public class DockerService(ILogger<DockerService> logger)
     
     public EventHandler<StatsEventArgs> OnStats;
 
-    public void StartStatusStream(string id, CancellationToken ctsToken)
+    public async Task GetStats(string id)
     {
-        logger.LogInformation($"Starting status stream for {id}");
-        Task.Run(() =>
-            _client.Containers.GetContainerStatsAsync(id, new ContainerStatsParameters(),
-                new Progress<ContainerStatsResponse>(
-                    response =>
+        logger.LogInformation($"Sending stats for {id}");
+        await _client.Containers.GetContainerStatsAsync(id, new ContainerStatsParameters() { OneShot = true, Stream = false},
+            new Progress<ContainerStatsResponse>(
+                response =>
+                {
+
+                    logger.LogInformation($"Got stats for {id}");
+                    
+                    double cpuPercent = 0;
+                    var cpuStats2 = response.CPUStats;
+
+                    if (_cpuUsageCache.TryGetValue(id, out var cpuStats1))
                     {
 
-                        double cpuPercent = 0;
-                        var cpuStats2 = response.CPUStats;
-                        
-                        if (_cpuUsageCache.TryGetValue(response.ID, out var cpuStats1))
-                        {
-                            
-                            ulong cpuDelta = cpuStats2.CPUUsage.TotalUsage - cpuStats1.CPUUsage.TotalUsage;
-                            ulong systemDelta = cpuStats2.SystemUsage - cpuStats1.SystemUsage;
+                        ulong cpuDelta = cpuStats2.CPUUsage.TotalUsage - cpuStats1.CPUUsage.TotalUsage;
+                        ulong systemDelta = cpuStats2.SystemUsage - cpuStats1.SystemUsage;
 
-                            if (systemDelta > 0)
-                            {
-                                // Calculate CPU usage percentage
-                                cpuPercent = ((cpuDelta / (double)systemDelta) * (float)cpuStats2.OnlineCPUs) * 100;
-                            }
-                            
+                        if (systemDelta > 0)
+                        {
+                            // Calculate CPU usage percentage
+                            cpuPercent = ((cpuDelta / (double)systemDelta) * (float)cpuStats2.OnlineCPUs) * 100;
                         }
-                        
-                        _cpuUsageCache.AddOrUpdate(response.ID, response.CPUStats, (s, usage) => response.CPUStats);
-                        
-                        var memory = new ContainerMemory(response.MemoryStats);
-                        var stats = new ContainerStats(response.ID, memory, Math.Round(cpuPercent,2));
-                        logger.LogTrace(JsonConvert.SerializeObject(stats, Formatting.None));
-                        
-                        OnStats.Invoke(null, new StatsEventArgs {ContainerStats = stats, Id = response.ID});
-                        
-                    }), ctsToken), ctsToken);
+
+                    }
+
+                    _cpuUsageCache.AddOrUpdate(id, response.CPUStats, (s, usage) => response.CPUStats);
+
+                    var memory = new ContainerMemory(response.MemoryStats);
+                    var stats = new ContainerStats(id, memory, Math.Round(cpuPercent, 2));
+                    logger.LogTrace(JsonConvert.SerializeObject(stats, Formatting.None));
+
+                    OnStats.Invoke(null, new StatsEventArgs { ContainerStats = stats, Id = id });
+
+                }), CancellationToken.None);
     }
 
     public async Task<List<ContainerStatus>> GetContainers()

@@ -1,20 +1,37 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
 namespace Docker.MQTT.Remote.Service;
 
-public class MainService(ILogger<MainService> logger, DockerService dockerService, MqttService mqttService) : IHostedService, IDisposable
+public class MainService(ILogger<MainService> logger, IConfiguration configuration, DockerService dockerService, MqttService mqttService) : IHostedService, IDisposable
 {
-    private Timer? _timer;
-    private Dictionary<string, CancellationTokenSource> _trackingList = new();
+    private Timer? _statusTimer;
+    private Timer? _statsTimer;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
 
         await mqttService.Connect();
-        
-        _timer = new Timer(SendStatus, null, TimeSpan.Zero, TimeSpan.FromSeconds(5));
+
+        if (configuration["Frequency:Status"] != "0")
+        {
+            _statusTimer = new Timer(SendStatus, null, TimeSpan.Zero, TimeSpan.FromSeconds(Convert.ToInt32(configuration["Frequency:Status"])));
+        }
+        else
+        {
+            logger.LogInformation("Status frequency set to 0. Disabling status.");
+        }
+
+        if (configuration["Frequency:Stats"] != "0")
+        {
+            _statsTimer = new Timer(SendStats, null, TimeSpan.Zero, TimeSpan.FromSeconds(Convert.ToInt32(configuration["Frequency:Stats"])));
+        }
+        else
+        {
+            logger.LogInformation("Stats frequency set to 0. Disabling stats.");
+        }
 
         mqttService.StopContainerReceived += async (sender, args) =>
         {
@@ -26,11 +43,31 @@ public class MainService(ILogger<MainService> logger, DockerService dockerServic
             await dockerService.StartContainer(args.Id);
         };
 
+        mqttService.StatsRequestReceived += async (sender, args) =>
+        {
+            SendStats(null);
+        };
+        
+        mqttService.StatusRequestReceived += async (sender, args) =>
+        {
+            SendStatus(null);
+        };
+
         dockerService.OnStats += async (sender, args) =>
         {
             await mqttService.SendContainerStats(args.Id, args.ContainerStats);
         };
 
+    }
+
+    private async void SendStats(object? state)
+    {
+        var containers = await dockerService.GetContainers();
+
+        foreach (var container in containers.Where(container => container.State == "running"))
+        {
+            await dockerService.GetStats(container.Id);
+        }
     }
 
     private async void SendStatus(object? state)
@@ -43,21 +80,6 @@ public class MainService(ILogger<MainService> logger, DockerService dockerServic
             logger.LogTrace(JsonConvert.SerializeObject(containers, Formatting.None));
             
             await mqttService.SendContainerStatus(containers);
-
-            foreach (var listKey in _trackingList.Keys.Where(listKey => containers.All(x => x.Id != listKey)))
-            {
-                await _trackingList[listKey].CancelAsync();
-                _trackingList.Remove(listKey);
-            }
-            
-            foreach (var container in containers)
-            {
-                if (_trackingList.ContainsKey(container.Id)) continue;
-                
-                var cts = new CancellationTokenSource();
-                dockerService.StartStatusStream(container.Id, cts.Token);
-                _trackingList.Add(container.Id, cts);
-            }
             
         }
         catch (Exception e)
@@ -68,12 +90,12 @@ public class MainService(ILogger<MainService> logger, DockerService dockerServic
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        _timer?.Change(Timeout.Infinite, 0);
+        _statusTimer?.Change(Timeout.Infinite, 0);
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
-        _timer?.Dispose();
+        _statusTimer?.Dispose();
     }
 }

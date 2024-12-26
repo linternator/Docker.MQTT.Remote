@@ -19,6 +19,9 @@ public class MqttService
     
     public EventHandler<IdEventArgs> StartContainerReceived;
     public EventHandler<IdEventArgs> StopContainerReceived;
+    
+    public EventHandler StatusRequestReceived;
+    public EventHandler StatsRequestReceived;
 
     public MqttService(IConfiguration configuration, ILogger<MqttService> logger)
     {
@@ -39,21 +42,26 @@ public class MqttService
 
         try
         {
-            JObject json = JObject.Parse(data);
             
-            if(json["id"] == null) throw new Exception("Invalid MQTT Payload.");
-            
-            var id = json["id"]!.ToString();
-
-            if (arg.ApplicationMessage.Topic.EndsWith("/stop"))
-            {
-                _logger.LogTrace("Stopping Docker service.");
-                StopContainerReceived.Invoke(null, new IdEventArgs() { Id = id });
+            if (arg.ApplicationMessage.Topic.EndsWith("/stop")) {
                 
-            } else if (arg.ApplicationMessage.Topic.EndsWith("/start"))
-            {
+                _logger.LogTrace("Stopping Docker service.");
+                StopContainerReceived.Invoke(null, new IdEventArgs() { Id = GetId(data) });
+                
+            } 
+            else if (arg.ApplicationMessage.Topic.EndsWith("/start")) {
+                
                 _logger.LogTrace("Starting Docker service.");
-                StartContainerReceived.Invoke(null, new IdEventArgs() { Id = id });
+                StartContainerReceived.Invoke(null, new IdEventArgs() { Id = GetId(data) });
+                
+            } else if (arg.ApplicationMessage.Topic.EndsWith("/status/request")) {
+                
+                StatusRequestReceived.Invoke(null, null);
+                
+            } else if (arg.ApplicationMessage.Topic.EndsWith("/stats/request")) {
+                
+                StatsRequestReceived.Invoke(null, null);
+                
             }
             
         }
@@ -63,6 +71,14 @@ public class MqttService
         }
         
         return Task.CompletedTask;
+    }
+
+    private string GetId(string data)
+    {
+        JObject json = JObject.Parse(data);
+        if(json["id"] == null) throw new Exception("Invalid MQTT Payload.");
+        var id = json["id"]!.ToString();
+        return id;
     }
 
     public async Task Connect()
@@ -78,6 +94,12 @@ public class MqttService
         
         var mqttSubscribeOptionsStop = _mqttFactory.CreateSubscribeOptionsBuilder().WithTopicFilter($"{_configuration["Mqtt:Topic"]}/stop").Build();
         await _mqttClient.SubscribeAsync(mqttSubscribeOptionsStop, CancellationToken.None);
+        
+        var mqttSubscribeOptionsStatus = _mqttFactory.CreateSubscribeOptionsBuilder().WithTopicFilter($"{_configuration["Mqtt:Topic"]}/status/request").Build();
+        await _mqttClient.SubscribeAsync(mqttSubscribeOptionsStatus, CancellationToken.None);
+        
+        var mqttSubscribeOptionsStats = _mqttFactory.CreateSubscribeOptionsBuilder().WithTopicFilter($"{_configuration["Mqtt:Topic"]}/stats/request").Build();
+        await _mqttClient.SubscribeAsync(mqttSubscribeOptionsStats, CancellationToken.None);
         
     }
 
